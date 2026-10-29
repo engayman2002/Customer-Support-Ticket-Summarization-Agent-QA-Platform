@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     AUTH_SECRET: str = "super-secret-shared-hs256-signing-key-minimum-32-bytes-long-2026"
+    ENCRYPTION_KEY: Optional[str] = None
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
 
@@ -48,4 +49,3 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
-
