@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.admin import router as admin_router
 from app.api.v1.agent import router as agent_router
 from app.api.v1.integrations import router as integrations_router
 from app.api.v1.manager import router as manager_router
@@ -21,7 +22,7 @@ from app.models.enums import UserRole
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    version="0.4.0",
+    version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -39,6 +40,7 @@ app.include_router(integrations_router)
 app.include_router(tickets_router)
 app.include_router(manager_router)
 app.include_router(agent_router)
+app.include_router(admin_router)
 
 
 @app.get("/healthz", tags=["Health"])

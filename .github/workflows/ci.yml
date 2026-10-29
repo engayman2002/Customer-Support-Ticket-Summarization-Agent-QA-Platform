@@ -1,0 +1,80 @@
+name: CI — Customer Support Ticket Summarization & Agent QA Platform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify-platform:
+    name: Backend (Pytest) + Frontend (Vitest & TypeScript)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: qa_admin
+          POSTGRES_PASSWORD: qa_secret_password
+          POSTGRES_DB: qa_platform_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U qa_admin -d qa_platform_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: "postgresql://qa_admin:qa_secret_password@localhost:5432/qa_platform_db?schema=public"
+      ASYNC_DATABASE_URL: "postgresql+asyncpg://qa_admin:qa_secret_password@localhost:5432/qa_platform_db"
+      REDIS_URL: "redis://localhost:6379/0"
+      AUTH_SECRET: "super_secret_shared_hs256_jwt_signing_key_minimum_32_bytes_long"
+      ENCRYPTION_MASTER_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      GROQ_API_KEY: "ci_placeholder_groq_api_key_safe_for_scanning"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Frontend Dependencies & Run Prisma Migrations + Seed
+        working-directory: ./frontend
+        run: |
+          npm install
+          npx prisma generate
+          npx prisma migrate deploy
+          npm run db:seed
+
+      - name: Install Backend Dependencies & Run Pytest Verification Suite
+        run: |
+          pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pytest -v
+
+      - name: Run Frontend Vitest & TypeScript Verification
+        working-directory: ./frontend
+        run: |
+          npm test
+          npx tsc --noEmit
+

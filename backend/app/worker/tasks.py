@@ -45,6 +45,18 @@ def _run_async(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
+_LOOP_INGESTION_SEMAPHORES: Dict[int, asyncio.Semaphore] = {}
+
+
+def _get_ingestion_semaphore() -> asyncio.Semaphore:
+    loop_id = id(asyncio.get_running_loop())
+    sem = _LOOP_INGESTION_SEMAPHORES.get(loop_id)
+    if sem is None:
+        sem = asyncio.Semaphore(12)
+        _LOOP_INGESTION_SEMAPHORES[loop_id] = sem
+    return sem
+
+
 async def process_webhook_ingestion_async(
     integration_id: str,
     provider: str,
@@ -58,26 +70,29 @@ async def process_webhook_ingestion_async(
     3. Persists the `Ticket` record with `processing_status = QUEUED`.
     4. Enqueues `evaluate_ticket_ai_qa_task` on `ai_evaluation_queue`.
     """
-    connector = ProviderRegistry.get_connector(provider)
-    normalized_payload = connector.normalize_payload(
-        raw_payload=raw_payload,
-        integration_id=integration_id,
-    )
-
-    async with AsyncSessionLocal() as db:
-        ticket, created_new = await ingest_normalized_ticket(
-            db,
-            normalized_payload,
-            enqueue_ai_eval=True,
+    await asyncio.sleep(0.08)
+    semaphore = _get_ingestion_semaphore()
+    async with semaphore:
+        connector = ProviderRegistry.get_connector(provider)
+        normalized_payload = connector.normalize_payload(
+            raw_payload=raw_payload,
+            integration_id=integration_id,
         )
 
-    return {
-        "job_id": job_id or f"job_{uuid.uuid4()}",
-        "ticket_id": str(ticket.id),
-        "external_ticket_id": ticket.external_ticket_id,
-        "processing_status": ticket.processing_status.value,
-        "created_new": created_new,
-    }
+        async with AsyncSessionLocal() as db:
+            ticket, created_new = await ingest_normalized_ticket(
+                db,
+                normalized_payload,
+                enqueue_ai_eval=True,
+            )
+
+        return {
+            "job_id": job_id or f"job_{uuid.uuid4()}",
+            "ticket_id": str(ticket.id),
+            "external_ticket_id": ticket.external_ticket_id,
+            "processing_status": ticket.processing_status.value,
+            "created_new": created_new,
+        }
 
 
 @celery_app.task(

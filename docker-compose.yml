@@ -34,9 +34,86 @@ services:
       retries: 10
       start_period: 3s
 
+  backend:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: qa_platform_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ASYNC_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-qa_admin}:${POSTGRES_PASSWORD:-qa_secret_password}@postgres:5432/${POSTGRES_DB:-qa_platform_db}
+      REDIS_URL: redis://redis:6379/0
+      AUTH_SECRET: ${AUTH_SECRET:-super_secret_shared_hs256_jwt_signing_key_minimum_32_bytes_long}
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      GROQ_API_KEY: ${GROQ_API_KEY:-placeholder_groq_api_key_configure_in_env}
+    ports:
+      - "${FASTAPI_PORT:-8000}:8000"
+
+  celery_worker:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: qa_platform_celery_worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ASYNC_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-qa_admin}:${POSTGRES_PASSWORD:-qa_secret_password}@postgres:5432/${POSTGRES_DB:-qa_platform_db}
+      REDIS_URL: redis://redis:6379/0
+      AUTH_SECRET: ${AUTH_SECRET:-super_secret_shared_hs256_jwt_signing_key_minimum_32_bytes_long}
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      GROQ_API_KEY: ${GROQ_API_KEY:-placeholder_groq_api_key_configure_in_env}
+    command: ["celery", "-A", "backend.app.workers.celery_app", "worker", "-Q", "ingestion_queue,ai_evaluation_queue,ai_evaluation_dlq", "--loglevel=info"]
+
+  celery_beat:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: qa_platform_celery_beat
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      ASYNC_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-qa_admin}:${POSTGRES_PASSWORD:-qa_secret_password}@postgres:5432/${POSTGRES_DB:-qa_platform_db}
+      REDIS_URL: redis://redis:6379/0
+      AUTH_SECRET: ${AUTH_SECRET:-super_secret_shared_hs256_jwt_signing_key_minimum_32_bytes_long}
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+    command: ["celery", "-A", "backend.app.workers.celery_app", "beat", "--loglevel=info"]
+
+  frontend:
+    profiles: ["prod"]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: qa_platform_frontend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-qa_admin}:${POSTGRES_PASSWORD:-qa_secret_password}@postgres:5432/${POSTGRES_DB:-qa_platform_db}?schema=public
+      AUTH_SECRET: ${AUTH_SECRET:-super_secret_shared_hs256_jwt_signing_key_minimum_32_bytes_long}
+      FASTAPI_INTERNAL_URL: http://backend:8000
+      NEXT_PUBLIC_FASTAPI_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+
 volumes:
   postgres_data:
     name: qa_platform_postgres_data
   redis_data:
     name: qa_platform_redis_data
-
