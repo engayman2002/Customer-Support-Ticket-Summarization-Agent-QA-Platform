@@ -1,0 +1,27 @@
+# Dependencies & Virtual Environments
+node_modules/
+frontend/node_modules/
+.venv/
+backend/.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Build & Test Caches
+frontend/.next/
+frontend/out/
+.pytest_cache/
+backend/.pytest_cache/
+.coverage
+coverage/
+
+# Environment Variables & Secrets (Keep .env.example)
+.env
+.env.local
+.env.*.local
+frontend/.env
+backend/.env
+
+# OS & Editor files
+.DS_Store
+*.log

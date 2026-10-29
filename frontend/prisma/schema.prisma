@@ -1,0 +1,214 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  AGENT
+}
+
+enum CrmType {
+  ZENDESK
+  FRESHDESK
+  INTERCOM
+  CUSTOM
+}
+
+enum TicketChannel {
+  EMAIL
+  LIVE_CHAT
+  SOCIAL
+  WEB_FORM
+  API
+}
+
+enum TicketPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum ProcessingStatus {
+  QUEUED
+  PROCESSING
+  EVALUATED
+  FAILED_RETRYABLE
+  FAILED_PERMANENT
+}
+
+enum IssueCategory {
+  BILLING
+  TECHNICAL_BUG
+  ACCOUNT_ACCESS
+  FEATURE_REQUEST
+  HOW_TO
+  CANCELLATION
+  OTHER
+}
+
+enum ResolutionStatus {
+  RESOLVED
+  UNRESOLVED
+  PARTIALLY_RESOLVED
+  PREMATURELY_CLOSED
+  ESCALATED_PROPERLY
+}
+
+enum SentimentTrajectory {
+  IMPROVED
+  UNCHANGED_POSITIVE
+  UNCHANGED_NEGATIVE
+  DEGRADED
+}
+
+enum FeedbackReadStatus {
+  UNREAD
+  READ
+  ACKNOWLEDGED
+}
+
+enum CoachingPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model User {
+  id                    String            @id @default(uuid()) @db.Uuid
+  email                 String            @unique @db.VarChar(255)
+  passwordHash          String            @map("password_hash")
+  fullName              String            @map("full_name") @db.VarChar(150)
+  role                  UserRole          @default(AGENT)
+  externalCrmAgentId    String?           @unique @map("external_crm_agent_id") @db.VarChar(128)
+  managerId             String?           @map("manager_id") @db.Uuid
+  isActive              Boolean           @default(true) @map("is_active")
+  createdAt             DateTime          @default(now()) @map("created_at")
+  updatedAt             DateTime          @updatedAt @map("updated_at")
+
+  manager               User?             @relation("ManagerToAgents", fields: [managerId], references: [id])
+  directReports         User[]            @relation("ManagerToAgents")
+  assignedTickets       Ticket[]          @relation("AgentTickets")
+  authoredFeedbacks     ManagerFeedback[] @relation("AuthoredByManager")
+  receivedFeedbacks     ManagerFeedback[] @relation("ReceivedByAgent")
+
+  @@index([role, isActive])
+  @@index([managerId])
+  @@map("users")
+}
+
+model Integration {
+  id                     String    @id @default(uuid()) @db.Uuid
+  name                   String    @db.VarChar(120)
+  crmType                CrmType   @map("crm_type")
+  subdomainOrBaseUrl     String    @map("subdomain_or_base_url") @db.VarChar(255)
+  encryptedApiKey        String    @map("encrypted_api_key")
+  encryptedWebhookSecret String    @map("encrypted_webhook_secret")
+  configMetadata         Json      @default("{}") @map("config_metadata") @db.JsonB
+  isActive               Boolean   @default(true) @map("is_active")
+  lastSuccessfulSyncAt   DateTime? @map("last_successful_sync_at")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  tickets                Ticket[]
+
+  @@index([crmType, isActive])
+  @@map("integrations")
+}
+
+model Ticket {
+  id                         String           @id @default(uuid()) @db.Uuid
+  integrationId              String           @map("integration_id") @db.Uuid
+  externalTicketId           String           @map("external_ticket_id") @db.VarChar(128)
+  assignedAgentId            String           @map("assigned_agent_id") @db.Uuid
+  customerIdentifier         String           @map("customer_identifier") @db.VarChar(255)
+  subject                    String           @db.VarChar(500)
+  channel                    TicketChannel    @default(EMAIL)
+  priority                   TicketPriority   @default(NORMAL)
+  processingStatus           ProcessingStatus @default(QUEUED) @map("processing_status")
+  rawTranscript              Json             @map("raw_transcript") @db.JsonB
+  ticketMetadata             Json             @default("{}") @map("ticket_metadata") @db.JsonB
+  firstResponseTimeSeconds   Int?             @map("first_response_time_seconds")
+  totalResolutionTimeSeconds Int?             @map("total_resolution_time_seconds")
+  ticketCreatedAt            DateTime         @map("ticket_created_at")
+  ticketClosedAt             DateTime         @map("ticket_closed_at")
+  createdAt                  DateTime         @default(now()) @map("created_at")
+  updatedAt                  DateTime         @updatedAt @map("updated_at")
+
+  integration                Integration      @relation(fields: [integrationId], references: [id], onDelete: Restrict)
+  assignedAgent              User             @relation("AgentTickets", fields: [assignedAgentId], references: [id])
+  aiQaReport                 AiQaReport?
+  managerFeedbacks           ManagerFeedback[]
+
+  @@unique([integrationId, externalTicketId, ticketClosedAt])
+  @@index([assignedAgentId, ticketClosedAt(sort: Desc)])
+  @@index([processingStatus])
+  @@index([ticketClosedAt(sort: Desc)])
+  @@map("tickets")
+}
+
+model AiQaReport {
+  id                           String              @id @default(uuid()) @db.Uuid
+  ticketId                     String              @unique @map("ticket_id") @db.Uuid
+  summary                      String              @db.Text
+  coreIssue                    String              @map("core_issue") @db.Text
+  issueCategory                IssueCategory       @map("issue_category")
+  resolutionStatus             ResolutionStatus    @map("resolution_status")
+  isResolvedProperly           Boolean             @map("is_resolved_properly")
+  prematureClosureDetected     Boolean             @map("premature_closure_detected")
+  prematureClosureReason       String?             @map("premature_closure_reason") @db.Text
+  agentScore                   Int                 @map("agent_score") @db.SmallInt
+  empathyRating                Int                 @map("empathy_rating") @db.SmallInt
+  clarityAndAccuracyRating     Int                 @map("clarity_and_accuracy_rating") @db.SmallInt
+  ownershipAndEfficiencyRating Int                 @map("ownership_and_efficiency_rating") @db.SmallInt
+  customerSentimentTrajectory  SentimentTrajectory @map("customer_sentiment_trajectory")
+  strengths                    Json                @db.JsonB
+  areasForImprovement          Json                @map("areas_for_improvement") @db.JsonB
+  flaggedEvidenceQuotes        Json                @map("flagged_evidence_quotes") @db.JsonB
+  actionableCoachingPlan       Json                @map("actionable_coaching_plan") @db.JsonB
+  modelUsed                    String              @map("model_used") @db.VarChar(100)
+  promptTokens                 Int                 @map("prompt_tokens")
+  completionTokens             Int                 @map("completion_tokens")
+  inferenceLatencyMs           Int                 @map("inference_latency_ms")
+  evaluatedAt                  DateTime            @default(now()) @map("evaluated_at")
+
+  ticket                       Ticket              @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([agentScore])
+  @@index([isResolvedProperly, prematureClosureDetected])
+  @@index([issueCategory])
+  @@map("ai_qa_reports")
+}
+
+model ManagerFeedback {
+  id                       String             @id @default(uuid()) @db.Uuid
+  ticketId                 String             @map("ticket_id") @db.Uuid
+  managerId                String             @map("manager_id") @db.Uuid
+  agentId                  String             @map("agent_id") @db.Uuid
+  managerOverrideScore     Int?               @map("manager_override_score") @db.SmallInt
+  coachingPriority         CoachingPriority   @default(MEDIUM) @map("coaching_priority")
+  comments                 String             @db.Text
+  actionItems              Json               @default("[]") @map("action_items") @db.JsonB
+  readStatus               FeedbackReadStatus @default(UNREAD) @map("read_status")
+  agentAcknowledgementNote String?            @map("agent_acknowledgement_note") @db.Text
+  readAt                   DateTime?          @map("read_at")
+  acknowledgedAt           DateTime?          @map("acknowledged_at")
+  createdAt                DateTime           @default(now()) @map("created_at")
+  updatedAt                DateTime           @updatedAt @map("updated_at")
+
+  ticket                   Ticket             @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  manager                  User               @relation("AuthoredByManager", fields: [managerId], references: [id])
+  agent                    User               @relation("ReceivedByAgent", fields: [agentId], references: [id])
+
+  @@index([agentId, readStatus, createdAt(sort: Desc)])
+  @@index([ticketId])
+  @@map("manager_feedback")
+}
+
