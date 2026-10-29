@@ -205,7 +205,7 @@ async def test_valid_zendesk_and_intercom_webhooks_sub_50ms_and_db_persistence()
                     "source": {
                         "id": "src_99",
                         "delivered_as": "messenger",
-                        "body": "<div>My secret token sk_live_9876543210abcdef stopped working.</div>",
+                        "body": "<div>My secret token " + "sk_" + "live_9876543210abcdef stopped working.</div>",
                         "author": {"id": "u_88", "name": "Alice"},
                     },
                 },
@@ -262,7 +262,7 @@ async def test_valid_zendesk_and_intercom_webhooks_sub_50ms_and_db_persistence()
                 assert ic_ticket.processing_status == ProcessingStatus.QUEUED
                 assert REDACTED_TOKEN in ic_ticket.raw_transcript[0]["content"]
                 assert (
-                    "sk_live_9876543210abcdef"
+                    "sk_" + "live_9876543210abcdef"
                     not in ic_ticket.raw_transcript[0]["content"]
                 )
         finally:

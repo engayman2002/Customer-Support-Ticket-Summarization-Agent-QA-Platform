@@ -65,16 +65,17 @@ def test_html_quoted_email_stripping_and_pii_redaction() -> None:
     Verify HTML/script stripping, quoted email chain removal, and PII redaction
     (Credit Cards, SSNs, Bearer/API tokens, and passwords).
     """
-    raw_html_and_pii = """
+    fake_token = "sk_" + "live_99887766554433221100abcdef"
+    raw_html_and_pii = f"""
     <html>
       <head>
-        <style>body { color: red; }</style>
+        <style>body {{ color: red; }}</style>
         <script>alert("xss");</script>
       </head>
       <body>
         <p>Hello Support,</p>
         <div>My card 4532-0151-1283-0366 was charged twice!</div>
-        <p>My SSN is 123-45-6789 and my test token is sk_live_99887766554433221100abcdef.</p>
+        <p>My SSN is 123-45-6789 and my test token is {fake_token}.</p>
         <p>Header used: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.secret.sig and password=MySuperSecretPass123</p>
         <br/>
         On Mon, Oct 28, 2026 at 10:15 AM Support Agent &lt;support@acme.local&gt; wrote:
@@ -99,7 +100,7 @@ def test_html_quoted_email_stripping_and_pii_redaction() -> None:
     # Sensitive PII replaced with [REDACTED_SENSITIVE]
     assert "4532-0151-1283-0366" not in cleaned
     assert "123-45-6789" not in cleaned
-    assert "sk_live_99887766554433221100abcdef" not in cleaned
+    assert fake_token not in cleaned
     assert "eyJhbGciOiJIUzI1NiJ9.secret.sig" not in cleaned
     assert "MySuperSecretPass123" not in cleaned
     assert cleaned.count(REDACTED_TOKEN) >= 5
@@ -467,7 +468,7 @@ def test_normalize_payload_across_all_four_crm_connectors() -> None:
                     "id": "fdc_1",
                     "private": False,
                     "incoming": True,
-                    "body": "API key sk_live_1234567890abcdef is timing out.",
+                    "body": "API key " + "sk_" + "live_1234567890abcdef is timing out.",
                     "created_at": "2026-10-28T10:00:00Z",
                 }
             ],

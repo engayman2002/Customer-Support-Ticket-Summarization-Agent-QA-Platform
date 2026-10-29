@@ -27,6 +27,15 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: str = "http://localhost:3000"
 
+    # --- Phase 3: Groq LPU Inference & Context Window Settings ---
+    GROQ_API_KEY: str = ""
+    GROQ_PRIMARY_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_FALLBACK_MODEL: str = "llama-3.1-8b-instant"
+    GROQ_COMPRESSION_MODEL: str = "llama-3.1-8b-instant"
+    GROQ_RPM_LIMIT: int = 30
+    GROQ_TPM_LIMIT: int = 15000
+    TRANSCRIPT_MAX_VERBATIM_TOKENS: int = 10000
+
     model_config = SettingsConfigDict(
         env_file=(
             str(BACKEND_DIR / ".env"),
