@@ -9,7 +9,9 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.agent import router as agent_router
 from app.api.v1.integrations import router as integrations_router
+from app.api.v1.manager import router as manager_router
 from app.api.v1.tickets import router as tickets_router
 from app.api.v1.webhooks import router as webhooks_router
 from app.core.config import settings
@@ -19,7 +21,7 @@ from app.models.enums import UserRole
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    version="0.3.0",
+    version="0.4.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -35,6 +37,8 @@ app.add_middleware(
 app.include_router(webhooks_router)
 app.include_router(integrations_router)
 app.include_router(tickets_router)
+app.include_router(manager_router)
+app.include_router(agent_router)
 
 
 @app.get("/healthz", tags=["Health"])
