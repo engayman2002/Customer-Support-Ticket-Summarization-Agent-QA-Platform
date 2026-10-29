@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.integrations import router as integrations_router
+from app.api.v1.tickets import router as tickets_router
 from app.api.v1.webhooks import router as webhooks_router
 from app.core.config import settings
 from app.core.security import AuthenticatedUser, get_current_user, require_roles
@@ -18,7 +19,7 @@ from app.models.enums import UserRole
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    version="0.2.0",
+    version="0.3.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -33,6 +34,7 @@ app.add_middleware(
 
 app.include_router(webhooks_router)
 app.include_router(integrations_router)
+app.include_router(tickets_router)
 
 
 @app.get("/healthz", tags=["Health"])

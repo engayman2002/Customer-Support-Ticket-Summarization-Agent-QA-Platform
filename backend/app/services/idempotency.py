@@ -31,7 +31,7 @@ def get_redis_client() -> aioredis.Redis:
         client = aioredis.from_url(
             settings.REDIS_URL,
             decode_responses=True,
-            max_connections=20,
+            max_connections=256,
         )
         _LOOP_REDIS_CLIENTS[loop] = client
     return client

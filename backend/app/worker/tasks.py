@@ -7,11 +7,20 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 
+from app.ai.evaluator import GroqTicketEvaluator
 from app.db.session import AsyncSessionLocal
 from app.integrations.registry import ProviderRegistry
 from app.models.enums import ProcessingStatus
 from app.models.integration import Integration
 from app.models.ticket import Ticket
+from app.services.evaluation_service import (
+    evaluate_and_persist_ticket,
+    mark_ticket_failed_and_route_to_dlq,
+)
+from app.services.idempotency import (
+    REDIS_AI_EVALUATION_QUEUE_KEY,
+    push_job_to_redis_queue,
+)
 from app.services.ingestion_service import (
     ingest_normalized_ticket,
     reconcile_integration_closed_tickets,
@@ -136,45 +145,81 @@ def reconcile_closed_tickets_task(
     )
 
 
+async def evaluate_ticket_ai_qa_async(
+    ticket_id: str,
+    *,
+    evaluator: Optional[GroqTicketEvaluator] = None,
+    rate_limit_scope: str = "default",
+    rpm_limit: Optional[int] = None,
+    tpm_limit: Optional[int] = None,
+    bypass_rate_limit: bool = False,
+) -> Dict[str, Any]:
+    """
+    Async implementation of `evaluate_ticket_ai_qa_task` on `ai_evaluation_queue`:
+    - Acquires distributed RPM/TPM budget via `acquire_groq_rate_limit`.
+    - If rate-limited (`status == RATE_LIMITED`), re-enqueues the job with countdown
+      onto `ai_evaluation_queue` without dropping the ticket or blocking a worker thread.
+    - If evaluation fails after primary + fallback retries, routes the ticket to
+      `handle_ai_evaluation_dlq_task` (`ai_evaluation_dlq`) with `FAILED_RETRYABLE`.
+    """
+    try:
+        result = await evaluate_and_persist_ticket(
+            ticket_id=ticket_id,
+            evaluator=evaluator,
+            rate_limit_scope=rate_limit_scope,
+            rpm_limit=rpm_limit,
+            tpm_limit=tpm_limit,
+            bypass_rate_limit=bypass_rate_limit,
+            route_to_dlq_on_failure=True,
+            raise_on_failure=True,
+        )
+        if result.get("status") == "RATE_LIMITED":
+            retry_after = float(result.get("retry_after_seconds", 2.0))
+            await push_job_to_redis_queue(
+                REDIS_AI_EVALUATION_QUEUE_KEY,
+                {
+                    "task": "app.worker.tasks.evaluate_ticket_ai_qa_task",
+                    "ticket_id": str(ticket_id),
+                    "status": "DEFERRED_RATE_LIMITED",
+                    "countdown_seconds": retry_after,
+                    "rescheduled_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        return result
+    except Exception as exc:
+        dlq_result = await mark_ticket_failed_and_route_to_dlq(
+            ticket_id=ticket_id,
+            error_reason=str(exc),
+        )
+        return dlq_result
+
+
 @celery_app.task(
     name="app.worker.tasks.evaluate_ticket_ai_qa_task",
     queue=AI_EVALUATION_QUEUE_NAME,
+    bind=True,
+    max_retries=4,
 )
-def evaluate_ticket_ai_qa_task(ticket_id: str) -> Dict[str, Any]:
+def evaluate_ticket_ai_qa_task(
+    self: Any,
+    ticket_id: str,
+) -> Dict[str, Any]:
     """
     Rate-limited AI evaluation worker task on `ai_evaluation_queue`.
-    Phase 2 registers the queue routing and deterministic stub; Phase 3 populates
-    the LangChain + Groq (`llama-3.3-70b-versatile`) structured evaluation pipeline.
+    Executes the LangChain + `ChatGroq` (`llama-3.3-70b-versatile` -> `llama-3.1-8b-instant`)
+    structured evaluation pipeline and persists `AiQaReport`.
     """
-    return {
-        "ticket_id": str(ticket_id),
-        "queue": AI_EVALUATION_QUEUE_NAME,
-        "status": "QUEUED_FOR_AI_EVALUATION",
-        "scheduled_at": datetime.now(timezone.utc).isoformat(),
-    }
+    return _run_async(evaluate_ticket_ai_qa_async(ticket_id=ticket_id))
 
 
 async def _mark_ticket_failed_retryable_async(
     ticket_id: str,
     error_reason: str,
 ) -> Dict[str, Any]:
-    async with AsyncSessionLocal() as db:
-        stmt = select(Ticket).where(Ticket.id == uuid.UUID(str(ticket_id)))
-        result = await db.execute(stmt)
-        ticket = result.scalar_one_or_none()
-        if ticket is not None:
-            ticket.processing_status = ProcessingStatus.FAILED_RETRYABLE
-            metadata = dict(ticket.ticket_metadata or {})
-            metadata["last_dlq_error"] = error_reason
-            ticket.ticket_metadata = metadata
-            db.add(ticket)
-            await db.commit()
-
-    return {
-        "ticket_id": str(ticket_id),
-        "status": ProcessingStatus.FAILED_RETRYABLE.value,
-        "error_reason": error_reason,
-    }
+    return await mark_ticket_failed_and_route_to_dlq(
+        ticket_id=ticket_id,
+        error_reason=error_reason,
+    )
 
 
 @celery_app.task(
@@ -192,4 +237,3 @@ def handle_ai_evaluation_dlq_task(
             error_reason=error_reason,
         )
     )
-
