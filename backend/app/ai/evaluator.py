@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
-from langchain_groq import ChatGroq
+from langchain_core.messages import BaseMessage
 
 from app.ai.context_window import (
     count_tokens,
@@ -21,7 +20,8 @@ from app.ai.prompts import (
     MIDDLE_SEGMENT_COMPRESSION_SYSTEM_PROMPT,
     build_evaluation_prompt_messages,
 )
-from app.core.config import settings
+from app.LLM_Providers.base import BaseLLMProvider
+from app.LLM_Providers.registry import get_llm_provider
 from app.models.enums import (
     IssueCategory,
     ResolutionStatus,
@@ -602,18 +602,20 @@ def analyze_transcript_deterministically(
     return apply_qa_scoring_guardrails(raw_eval)
 
 
-class GroqTicketEvaluator:
+class TicketQAEvaluator:
     """
-    Section 3.1–3.4 LangChain + `ChatGroq` Structured Output Evaluator with:
+    Pluggable Multi-LLM Structured Output Evaluator (`backend/app/LLM_Providers/`) with:
     - Hierarchical Head-Body-Tail Context Window Compression (`> 10,000` tokens)
-    - Primary Model (`llama-3.3-70b-versatile`) with Exponential Backoff + Jitter
-    - Automatic Fallback Model (`llama-3.1-8b-instant`) on `429` / `503` / timeout
+    - Provider-agnostic Primary Model with Exponential Backoff + Jitter
+    - Automatic Fallback Model on `429` / `503` / timeout
     - Deterministic Post-Inference Guardrail Clamping (`apply_qa_scoring_guardrails`)
     """
 
     def __init__(
         self,
         *,
+        provider: Optional[BaseLLMProvider] = None,
+        provider_name: Optional[str] = None,
         api_key: Optional[str] = None,
         primary_model: Optional[str] = None,
         fallback_model: Optional[str] = None,
@@ -624,65 +626,57 @@ class GroqTicketEvaluator:
         max_retries: int = 3,
         base_backoff_seconds: float = 0.05,
     ) -> None:
-        self.api_key = (
-            api_key if api_key is not None else settings.GROQ_API_KEY
-        ).strip()
-        self.primary_model = primary_model or settings.GROQ_PRIMARY_MODEL
-        self.fallback_model = fallback_model or settings.GROQ_FALLBACK_MODEL
-        self.compression_model = (
-            compression_model or settings.GROQ_COMPRESSION_MODEL
+        self.provider: BaseLLMProvider = provider or get_llm_provider(
+            provider_name=provider_name,
+            api_key=api_key,
+            primary_model=primary_model,
+            fallback_model=fallback_model,
+            compression_model=compression_model,
         )
+        self.api_key = self.provider.api_key
+        self.primary_model = self.provider.primary_model_name
+        self.fallback_model = self.provider.fallback_model_name
+        self.compression_model = self.provider.compression_model_name
         self._primary_runnable = primary_runnable
         self._fallback_runnable = fallback_runnable
         self._compression_summarizer = compression_summarizer
         self.max_retries = max(1, int(max_retries))
         self.base_backoff_seconds = max(0.0, float(base_backoff_seconds))
 
-    def _build_chat_groq_structured_runnable(self, model_name: str) -> Any:
+    def _build_structured_runnable(
+        self, model_name: str, use_fallback: bool = False
+    ) -> Any:
         """
-        Instantiate `ChatGroq` bound with `.with_structured_output(TicketQAEvaluation, method="json_schema", include_raw=True)`.
+        Delegate structured output runnable construction to the active `BaseLLMProvider`.
         """
-        llm = ChatGroq(
-            model=model_name,
-            api_key=self.api_key,
-            temperature=0.0,
-            max_tokens=2048,
-            timeout=30.0,
-            max_retries=1,
-        )
-        return llm.with_structured_output(
+        return self.provider.get_structured_output_runnable(
             TicketQAEvaluation,
-            method="json_schema",
-            include_raw=True,
+            use_fallback=use_fallback,
+            model_override=model_name,
         )
+
+    def _build_chat_groq_structured_runnable(self, model_name: str) -> Any:
+        """Backwards-compatible alias for `_build_structured_runnable`."""
+        return self._build_structured_runnable(model_name=model_name)
 
     async def summarize_middle_chunk(self, chunk_text: str) -> str:
         """
-        Summarize a 4,000-token middle transcript window using `settings.GROQ_COMPRESSION_MODEL`
-        (`llama-3.1-8b-instant`), falling back to `default_middle_chunk_summarizer` if offline.
+        Summarize a 4,000-token middle transcript window using the active provider's
+        compression model, falling back to `default_middle_chunk_summarizer` if offline.
         """
         if self._compression_summarizer is not None:
             return await self._compression_summarizer(chunk_text)
 
-        if not self.api_key:
+        if not self.provider.is_configured():
             return await default_middle_chunk_summarizer(chunk_text)
 
         try:
-            compressor_llm = ChatGroq(
-                model=self.compression_model,
-                api_key=self.api_key,
-                temperature=0.0,
-                max_tokens=512,
-                timeout=20.0,
+            summary = await self.provider.summarize_chunk(
+                MIDDLE_SEGMENT_COMPRESSION_SYSTEM_PROMPT,
+                chunk_text,
             )
-            messages = [
-                SystemMessage(content=MIDDLE_SEGMENT_COMPRESSION_SYSTEM_PROMPT),
-                HumanMessage(content=chunk_text),
-            ]
-            response = await compressor_llm.ainvoke(messages)
-            content = getattr(response, "content", None)
-            if isinstance(content, str) and content.strip():
-                return content.strip()
+            if isinstance(summary, str) and summary.strip():
+                return summary.strip()
         except Exception as exc:
             logger.warning(
                 "Middle-segment LLM compression failed (%s); falling back to extractive summarizer.",
@@ -828,7 +822,9 @@ class GroqTicketEvaluator:
             self._primary_runnable is not None
             or self._fallback_runnable is not None
         )
-        use_live_or_injected_llm = has_custom_runnables or bool(self.api_key)
+        use_live_or_injected_llm = (
+            has_custom_runnables or self.provider.is_configured()
+        )
 
         if not use_live_or_injected_llm:
             deterministic_eval = analyze_transcript_deterministically(
@@ -853,7 +849,9 @@ class GroqTicketEvaluator:
         primary_runnable = (
             self._primary_runnable
             if self._primary_runnable is not None
-            else self._build_chat_groq_structured_runnable(self.primary_model)
+            else self._build_structured_runnable(
+                self.primary_model, use_fallback=False
+            )
         )
 
         try:
@@ -889,8 +887,10 @@ class GroqTicketEvaluator:
             self._fallback_runnable
             if self._fallback_runnable is not None
             else (
-                self._build_chat_groq_structured_runnable(self.fallback_model)
-                if self.api_key
+                self._build_structured_runnable(
+                    self.fallback_model, use_fallback=True
+                )
+                if self.provider.is_configured()
                 else None
             )
         )
@@ -926,4 +926,8 @@ class GroqTicketEvaluator:
                 f"Both primary model ('{self.primary_model}') and fallback model "
                 f"('{self.fallback_model}') failed evaluation: {fallback_exc}"
             ) from fallback_exc
+
+
+# Backwards-compatible alias so all existing imports (`from app.ai.evaluator import GroqTicketEvaluator`) work seamlessly
+GroqTicketEvaluator = TicketQAEvaluator
 

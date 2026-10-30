@@ -70,8 +70,16 @@ async def acquire_groq_rate_limit(
     Redis Lua RPM/TPM token bucket.
     Returns `(allowed: bool, retry_after_seconds: float)`.
     """
-    effective_rpm = rpm_limit if rpm_limit is not None else settings.GROQ_RPM_LIMIT
-    effective_tpm = tpm_limit if tpm_limit is not None else settings.GROQ_TPM_LIMIT
+    effective_rpm = (
+        rpm_limit
+        if rpm_limit is not None
+        else (settings.LLM_RPM_LIMIT or settings.GROQ_RPM_LIMIT)
+    )
+    effective_tpm = (
+        tpm_limit
+        if tpm_limit is not None
+        else (settings.LLM_TPM_LIMIT or settings.GROQ_TPM_LIMIT)
+    )
     tokens_to_reserve = max(1, int(estimated_tokens))
     window_ms = max(100, int(window_seconds * 1000))
 
